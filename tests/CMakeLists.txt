@@ -94,8 +94,10 @@ set_tests_properties(doctest PROPERTIES
 )
 
 
-# TODO (GloriousTaco): Support IPC on Windows.
-if (UNIX)
+# The bundled Unicorn library is Linux x86-64 ELF.
+# Other platforms require a compatible Unicorn build.
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+    CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
     set(UNICORN_ROOT_LINUX "${CMAKE_SOURCE_DIR}/extern/Unicorn/linux")
 
     if (NOT EXISTS "${UNICORN_ROOT_LINUX}/lib/libunicorn.so")
