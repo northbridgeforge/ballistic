@@ -1,5 +1,7 @@
 #include "bal_fuzzer_ipc.h"
 #include "bal_fuzzer_state.h"
+#include "bal_fuzzer_state_matrix.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,10 +9,10 @@
 int
 main(const int argc, const char **argv)
 {
-    if (argc < 4)
+    if (argc != 4 && (argc != 5 || strcmp(argv[4], "--matrix") != 0))
     {
         (void)fprintf(stderr,
-                      "Usage: %s <ballistic_worker_path> <unicorn_worker_path> <seeds.bin>\n",
+                      "Usage: %s <ballistic_worker_path> <unicorn_worker_path> <seeds.bin> [--matrix]\n",
                       argv[0]);
         return EXIT_FAILURE;
     }
@@ -48,7 +50,18 @@ main(const int argc, const char **argv)
     (void)fread(seeds, sizeof(uint32_t), seed_count, seeds_file);
     (void)fclose(seeds_file);
 
-    BAL_LOG_INFO(&bal_thread_logger, "Loaded %u seeds from %s.", seed_count, seeds_file_path);
+    BAL_LOG_INFO(&bal_thread_logger, "Loaded %zu seeds from %s.", seed_count, seeds_file_path);
+
+    const size_t states_per_seed = argc == 5 ? BAL_FUZZER_STATE_MATRIX_SIZE : 1U;
+
+    if (seed_count > SIZE_MAX / states_per_seed)
+    {
+        BAL_LOG_ERROR(&bal_thread_logger, "Fuzzer case count overflow.");
+        free(seeds);
+        return EXIT_FAILURE;
+    }
+
+    const size_t total_cases = seed_count * states_per_seed;
 
     bal_fuzzer_worker_handle_t ballistic_worker = {};
     bal_fuzzer_worker_handle_t unicorn_worker   = {};
@@ -71,25 +84,28 @@ main(const int argc, const char **argv)
         return EXIT_FAILURE;
     }
 
-    const uint32_t *BAL_RESTRICT seed_cursor   = seeds;
     uint64_t                     seeds_passed  = 0U;
     uint64_t                     seeds_failed  = 0U;
     uint64_t                     seeds_skipped = 0U;
     uint64_t                     errors        = 0U;
-    for (size_t i = 0U; i < seed_count; ++i)
+    for (size_t case_index = 0U; case_index < total_cases; ++case_index)
     {
         if (errors > 5U)
         {
             break;
         }
 
+        const size_t seed_index = case_index / states_per_seed;
+        const size_t state_index = case_index % states_per_seed;
+
         bal_fuzzer_input_t input = {};
 
         // Add 1 because at the start of loop, the ID needs to start at 1 not 0.
-        input.message_id        = i + 1U;
+        input.message_id        = case_index + 1U;
         input.instruction_count = 1U;
-        input.instructions[0]   = *seed_cursor;
+        input.instructions[0]   = seeds[seed_index];
         input.initial_state.pc  = 0U;
+        bal_fuzzer_state_matrix_initialize(&input.initial_state, state_index);
 
         status = bal_fuzzer_ipc_send(ballistic_worker.input_file_descriptor, &input, sizeof(input));
 
@@ -99,7 +115,7 @@ main(const int argc, const char **argv)
                           "Failed to send input to Ballistic worker because %s.",
                           bal_error_to_string(status));
             ++errors;
-            ++seed_cursor;
+
             continue;
         }
 
@@ -111,7 +127,7 @@ main(const int argc, const char **argv)
                           "Failed to send input to Unicorn worker because %s.",
                           bal_error_to_string(status));
             ++errors;
-            ++seed_cursor;
+
             continue;
         }
 
@@ -130,7 +146,7 @@ main(const int argc, const char **argv)
         {
             BAL_LOG_ERROR(&bal_thread_logger, "Ballistic worker crashed or disconnected.");
             ++errors;
-            ++seed_cursor;
+
             continue;
         }
 
@@ -138,13 +154,13 @@ main(const int argc, const char **argv)
         {
             BAL_LOG_ERROR(&bal_thread_logger, "Unicorn worker crashed or disconnected.");
             ++errors;
-            ++seed_cursor;
+
             continue;
         }
 
         if (BAL_FUZZER_WORKER_ERROR_UNKNOWN_INSTRUCTION == ballistic_response.status)
         {
-            ++seed_cursor;
+
             ++seeds_skipped;
             continue;
         }
@@ -154,9 +170,9 @@ main(const int argc, const char **argv)
                           "Ballistic worker reported execution error and "
                           "returned status code %d for seed 0x%08X.",
                           ballistic_response.status,
-                          *seed_cursor);
+                          seeds[seed_index]);
             ++errors;
-            ++seed_cursor;
+
             continue;
         }
 
@@ -165,10 +181,10 @@ main(const int argc, const char **argv)
             BAL_LOG_WARN(&bal_thread_logger,
                          "Unicorn worker reported execution error for seed 0x%08X and "
                          "returned status code %d, skipping...",
-                         *seed_cursor,
+                         seeds[seed_index],
                          unicorn_response.status);
             ++seeds_skipped;
-            ++seed_cursor;
+
             continue;
         }
 
@@ -184,7 +200,11 @@ main(const int argc, const char **argv)
             BAL_LOG_ERROR(&bal_thread_logger,
                           "CPU state mismatch! %u field(s) mismatched for seed 0x%08X.",
                           comparison_result.divergence_count,
-                          *seed_cursor);
+                          seeds[seed_index]);
+            BAL_LOG_ERROR(&bal_thread_logger,
+                          "Reproducer: seed_index=%zu state_index=%zu",
+                          seed_index,
+                          state_index);
             ++seeds_failed;
 
             const bal_fuzzer_divergence_t *BAL_RESTRICT divergence_cursor
@@ -234,7 +254,7 @@ main(const int argc, const char **argv)
             }
         }
 
-        ++seed_cursor;
+
     }
 
     bal_fuzzer_ipc_destroy(&ballistic_worker);
@@ -242,9 +262,9 @@ main(const int argc, const char **argv)
     free(seeds);
 
     BAL_LOG_INFO(&bal_thread_logger,
-                 "Fuzz complete: %u seeds | %llu passed | %llu failed | %llu seeds skipped | %llu "
+                 "Fuzz complete: %zu cases | %llu passed | %llu failed | %llu seeds skipped | %llu "
                  "errors.",
-                 seed_count,
+                 total_cases,
                  (unsigned long long)seeds_passed,
                  (unsigned long long)seeds_failed,
                  (unsigned long long)seeds_skipped,

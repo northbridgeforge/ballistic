@@ -47,4 +47,35 @@ to debug the engine's state via the following command, assuming you are in `./bu
 ```
 ./bal_fuzzer_worker_ballistic <hex instruction>
 ```
-                                                 
+
+## Deterministic CPU-State Matrix
+
+The fuzzer normally executes each instruction once with a zero-initialized
+CPU state. Pass `--matrix` after the seed filename to test each instruction
+against 16 deterministic initial CPU states:
+
+    ./bal_fuzzer ./bal_fuzzer_worker_ballistic ./bal_fuzzer_worker_unicorn seeds.bin --matrix
+
+State 0 preserves the original all-zero baseline. States 1-15 initialize
+X0-X29 with rotating boundary-value patterns, set the stack pointer to
+0x100000, and vary NZCV flags. Across all 16 states, every NZCV combination
+is represented.
+
+X30 (LR) is reserved by the worker execution harness. Both workers
+overwrite it with instruction_count * 4 (4 for these single-instruction
+cases), so matrix mode does not vary X30.
+
+Matrix mode requires the Unicorn SP snapshot correction from PR #98.
+Without that correction, nonzero-SP states produce false mismatches
+because Unicorn captures XZR rather than SP.
+
+The matrix is intended for curated register-only instruction corpora.
+Arbitrary memory-access and control-flow instructions may require suitable
+guest memory mappings or other execution setup. Matrix mode does not
+provide those mappings.
+
+On mismatches, the fuzzer reports the instruction, seed index, state index,
+and divergent CPU fields. The seed corpus and deterministic state index
+allow the initial state to be reconstructed.
+
+As with normal fuzzer operation, skipped instructions are not validated.

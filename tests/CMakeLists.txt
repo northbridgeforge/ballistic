@@ -132,4 +132,12 @@ if (UNIX)
 
     message(STATUS "[Ballistic-Tests] Configuring Fuzzer...")
     add_subdirectory(fuzzer)
+
+    add_ballistic_test(
+        test_bal_fuzzer_state_matrix
+        unit/bal_fuzzer/test_bal_fuzzer_state_matrix.c
+    )
+    target_link_libraries(
+        test_bal_fuzzer_state_matrix PRIVATE BallisticTestFuzzerCore
+    )
 endif ()
